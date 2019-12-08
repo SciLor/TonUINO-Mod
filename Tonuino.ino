@@ -3,13 +3,18 @@
 #include <JC_Button.h>
 #include <MFRC522.h>
 #include <SPI.h>
-#include <SoftwareSerial.h>
-#include <avr/sleep.h>
+//#include <SoftwareSerial.h>
+//#include <avr/sleep.h>
 
+#include <driver/rtc_io.h>
+
+#include <FastLED.h>
+#include <Wire.h>
+#include <SparkFun_MMA8452Q.h>
 /*
    _____         _____ _____ _____ _____
   |_   _|___ ___|  |  |     |   | |     |
-    | | | . |   |  |  |-   -| | | |  |  |
+    | | | . |   |  |  |-   -| | | |  |  | 
     |_| |___|_|_|_____|_____|_|___|_____|
     TonUINO Version 2.1
 
@@ -23,7 +28,7 @@
 static const uint32_t cardCookie = 322417479;
 
 // DFPlayer Mini
-SoftwareSerial mySoftwareSerial(2, 3); // RX, TX
+HardwareSerial mySoftwareSerial(2); // UART ID
 uint16_t numTracksInFolder;
 uint16_t currentTrack;
 uint16_t firstTrack;
@@ -117,7 +122,7 @@ class Mp3Notify {
     }
 };
 
-static DFMiniMp3<SoftwareSerial, Mp3Notify> mp3(mySoftwareSerial);
+static DFMiniMp3<HardwareSerial, Mp3Notify> mp3(mySoftwareSerial);
 
 void shuffleQueue() {
   // Queue für die Zufallswiedergabe erstellen
@@ -150,12 +155,12 @@ void resetSettings() {
   Serial.println(F("=== resetSettings()"));
   mySettings.cookie = cardCookie;
   mySettings.version = 2;
-  mySettings.maxVolume = 25;
-  mySettings.minVolume = 5;
-  mySettings.initVolume = 15;
+  mySettings.maxVolume = 10;
+  mySettings.minVolume = 1;
+  mySettings.initVolume = 1;
   mySettings.eq = 1;
   mySettings.locked = false;
-  mySettings.standbyTimer = 0;
+  mySettings.standbyTimer = 1;
   mySettings.invertVolumeButtons = true;
   mySettings.shortCuts[0].folder = 0;
   mySettings.shortCuts[1].folder = 0;
@@ -571,11 +576,11 @@ static void nextTrack(uint16_t track) {
       Serial.println(currentTrack);
       mp3.playFolderTrack(myFolder->folder, currentTrack);
       // Fortschritt im EEPROM abspeichern
-      EEPROM.update(myFolder->folder, currentTrack);
+      EEPROM.write(myFolder->folder, currentTrack);
     } else {
       //      mp3.sleep();  // Je nach Modul kommt es nicht mehr zurück aus dem Sleep!
       // Fortschritt zurück setzen
-      EEPROM.update(myFolder->folder, 1);
+      EEPROM.write(myFolder->folder, 1);
       setstandbyTimer();
     }
   }
@@ -620,14 +625,14 @@ static void previousTrack() {
     }
     mp3.playFolderTrack(myFolder->folder, currentTrack);
     // Fortschritt im EEPROM abspeichern
-    EEPROM.update(myFolder->folder, currentTrack);
+    EEPROM.write(myFolder->folder, currentTrack);
   }
   delay(1000);
 }
 
 // MFRC522
-#define RST_PIN 9                 // Configurable, see typical pin layout above
-#define SS_PIN 10                 // Configurable, see typical pin layout above
+#define RST_PIN 4                 // Configurable, see typical pin layout above RST
+#define SS_PIN 0                 // Configurable, see typical pin layout above SDA/SS
 MFRC522 mfrc522(SS_PIN, RST_PIN); // Create MFRC522
 MFRC522::MIFARE_Key key;
 bool successRead;
@@ -636,12 +641,26 @@ byte blockAddr = 4;
 byte trailerBlock = 7;
 MFRC522::StatusCode status;
 
-#define buttonPause A0
-#define buttonUp A1
-#define buttonDown A2
-#define busyPin 4
-#define shutdownPin 7
-#define openAnalogPin A7
+#define MMA8452
+#define TAP_SENSOR
+MMA8452Q accel;
+
+#define NUM_LEDS 2
+#define DATA_PIN 13
+#define CLOCK_PIN 12
+CRGB leds[NUM_LEDS];
+
+#define buttonUp 27
+#define buttonDown 26
+#define buttonPause 25
+#define busyPin 32
+
+#define openAnalogPin 14
+
+#define powerDownPin 33
+#define headphonePin 2
+#define ampPin 15
+
 
 #ifdef FIVEBUTTONS
 #define buttonFourPin A3
@@ -650,9 +669,9 @@ MFRC522::StatusCode status;
 
 #define LONG_PRESS 1000
 
-Button pauseButton(buttonPause);
-Button upButton(buttonUp);
-Button downButton(buttonDown);
+Button pauseButton(buttonPause, true);
+Button upButton(buttonUp, true);
+Button downButton(buttonDown, true);
 #ifdef FIVEBUTTONS
 Button buttonFour(buttonFourPin);
 Button buttonFive(buttonFivePin);
@@ -683,21 +702,29 @@ void disablestandbyTimer() {
 
 void checkStandbyAtMillis() {
   if (sleepAtMillis != 0 && millis() > sleepAtMillis) {
+    goStandby();
+  }
+}
+void goStandby() {
     Serial.println(F("=== power off!"));
-    // enter sleep state
-    digitalWrite(shutdownPin, HIGH);
-    delay(500);
 
-    // http://discourse.voss.earth/t/intenso-s10000-powerbank-automatische-abschaltung-software-only/805
-    // powerdown to 27mA (powerbank switches off after 30-60s)
+    
     mfrc522.PCD_AntennaOff();
     mfrc522.PCD_SoftPowerDown();
-    mp3.sleep();
 
-    set_sleep_mode(SLEEP_MODE_PWR_DOWN);
-    cli();  // Disable interrupts
-    sleep_mode();
-  }
+    cli();
+
+    FastLED.clear(true);
+
+    digitalWrite(ampPin, HIGH);
+    digitalWrite(powerDownPin, HIGH);
+    
+    mp3.reset();
+
+    rtc_gpio_pullup_en(GPIO_NUM_33); //powerDownPin
+    rtc_gpio_pullup_en(GPIO_NUM_27); //Wake Button
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_27, 0);
+    esp_deep_sleep_start();
 }
 
 bool isPlaying() {
@@ -729,18 +756,25 @@ void setup() {
   }
   randomSeed(ADCSeed); // Zufallsgenerator initialisieren
 
-  // Dieser Hinweis darf nicht entfernt werden
+  // Dieser Hinweis darf natürlich entfernt werden
   Serial.println(F("\n _____         _____ _____ _____ _____"));
   Serial.println(F("|_   _|___ ___|  |  |     |   | |     |"));
   Serial.println(F("  | | | . |   |  |  |-   -| | | |  |  |"));
   Serial.println(F("  |_| |___|_|_|_____|_____|_|___|_____|\n"));
-  Serial.println(F("TonUINO Version 2.1"));
+  Serial.println(F("TonUINO Version 2.1 LOLIN32 MOD"));
   Serial.println(F("created by Thorsten Voß and licensed under GNU/GPL."));
   Serial.println(F("Information and contribution at https://tonuino.de.\n"));
-
+  
   // Busy Pin
   pinMode(busyPin, INPUT);
+  pinMode(headphonePin, INPUT_PULLUP);
 
+  pinMode(powerDownPin, OUTPUT);
+  pinMode(ampPin, OUTPUT);
+
+  digitalWrite(ampPin, HIGH);
+  delay(100);
+  digitalWrite(powerDownPin, LOW);
   // load Settings from EEPROM
   loadSettingsFromFlash();
 
@@ -749,11 +783,13 @@ void setup() {
 
   // DFPlayer Mini initialisieren
   mp3.begin();
+  mp3.reset();
+  
   // Zwei Sekunden warten bis der DFPlayer Mini initialisiert ist
   delay(2000);
   volume = mySettings.initVolume;
   mp3.setVolume(volume);
-  mp3.setEq(mySettings.eq - 1);
+  mp3.setEq((DfMp3_Eq)(mySettings.eq - 1));
   // Fix für das Problem mit dem Timeout (ist jetzt in Upstream daher nicht mehr nötig!)
   //mySoftwareSerial.setTimeout(10000);
 
@@ -766,15 +802,29 @@ void setup() {
     key.keyByte[i] = 0xFF;
   }
 
+  
+  Wire.begin();
+  if (!accel.begin())
+    Serial.println("WARNING: MMA8452 not Connected. Please check connections.");
+
+  accel.setupTap(0x80, 0x7E, 0x80); //Y only
+  FastLED.addLeds<LPD8806, DATA_PIN, CLOCK_PIN, BRG>(leds, NUM_LEDS);
+
+  leds[0] = CRGB::Red;
+  leds[1] = CRGB::Green;
+  FastLED.show();
+
   pinMode(buttonPause, INPUT_PULLUP);
   pinMode(buttonUp, INPUT_PULLUP);
   pinMode(buttonDown, INPUT_PULLUP);
+
+  digitalWrite(ampPin, LOW);
 #ifdef FIVEBUTTONS
   pinMode(buttonFourPin, INPUT_PULLUP);
   pinMode(buttonFivePin, INPUT_PULLUP);
 #endif
-  pinMode(shutdownPin, OUTPUT);
-  digitalWrite(shutdownPin, LOW);
+  //pinMode(shutdownPin, OUTPUT);
+  //digitalWrite(shutdownPin, LOW);
 
 
   // RESET --- ALLE DREI KNÖPFE BEIM STARTEN GEDRÜCKT HALTEN -> alle EINSTELLUNGEN werden gelöscht
@@ -782,7 +832,7 @@ void setup() {
       digitalRead(buttonDown) == LOW) {
     Serial.println(F("Reset -> EEPROM wird gelöscht"));
     for (int i = 0; i < EEPROM.length(); i++) {
-      EEPROM.update(i, 0);
+      EEPROM.write(i, 0);
     }
     loadSettingsFromFlash();
   }
@@ -944,9 +994,30 @@ void playShortCut(uint8_t shortCut) {
 }
 
 void loop() {
+  leds[0] = CRGB::Red;
+  leds[1] = CRGB::Green;
+  FastLED.show();
+
+/*
+  sensorValue1 = analogRead(sensorPin1);
+  sensorValue2 = analogRead(sensorPin2);
+
+  convValue1 = 1.252f * 3.306f * sensorValue1 * 100.5f / 68.8f / 4096;
+  convValue2 = 1.205f * 3.306f * sensorValue2 * 100.5f / 68.8f / 4096;
+*/
+
   do {
+
     checkStandbyAtMillis();
     mp3.loop();
+
+    if (digitalRead(headphonePin) == LOW && digitalRead(ampPin) == LOW) {
+      digitalWrite(ampPin, HIGH);
+      Serial.println(F("=== headphones plugged in, amp off"));
+    } else if (digitalRead(headphonePin) == HIGH && digitalRead(ampPin) == HIGH) {
+      digitalWrite(ampPin, LOW);
+      Serial.println(F("=== headphones plugged out, amp on"));
+    }
 
     // Modifier : WIP!
     if (activeModifier != NULL) {
@@ -1087,7 +1158,18 @@ void loop() {
       }
     }
 #endif
+#ifdef TAP_SENSOR
+byte tap = accel.readTap();
+if (tap > 0) {
+  if (tap == 0x20) {
+    nextButton();
+  } else if (tap == 0x22) {
+    previousButton();
+  }
+}
+#endif
     // Ende der Buttons
+
   } while (!mfrc522.PICC_IsNewCardPresent());
 
   // RFID Karte wurde aufgelegt
@@ -1112,7 +1194,7 @@ void loop() {
   mfrc522.PCD_StopCrypto1();
 }
 
-void adminMenu(bool fromCard = false) {
+void adminMenu(bool fromCard) {
   disablestandbyTimer();
   mp3.pause();
   Serial.println(F("=== adminMenu()"));
@@ -1187,7 +1269,7 @@ void adminMenu(bool fromCard = false) {
   else if (subMenu == 5) {
     // EQ
     mySettings.eq = voiceMenu(6, 920, 920, false, false, mySettings.eq);
-    mp3.setEq(mySettings.eq - 1);
+    mp3.setEq((DfMp3_Eq)(mySettings.eq - 1));
   }
   else if (subMenu == 6) {
     // create modifier card
@@ -1296,7 +1378,7 @@ void adminMenu(bool fromCard = false) {
   else if (subMenu == 11) {
     Serial.println(F("Reset -> EEPROM wird gelöscht"));
     for (int i = 0; i < EEPROM.length(); i++) {
-      EEPROM.update(i, 0);
+      EEPROM.write(i, 0);
     }
     resetSettings();
     mp3.playMp3FolderTrack(999);
@@ -1311,7 +1393,7 @@ void adminMenu(bool fromCard = false) {
       mySettings.adminMenuLocked = 1;
     }
     else if (temp == 3) {
-      int8_t pin[4];
+      uint8_t pin[4];
       mp3.playMp3FolderTrack(991);
       if (askCode(pin)) {
         memcpy(mySettings.adminMenuPin, pin, 4);
@@ -1344,7 +1426,7 @@ bool askCode(uint8_t *code) {
 }
 
 uint8_t voiceMenu(int numberOfOptions, int startMessage, int messageOffset,
-                  bool preview = false, int previewFromFolder = 0, int defaultValue = 0, bool exitWithLongPress = false) {
+                  bool preview, int previewFromFolder, int defaultValue, bool exitWithLongPress) {
   uint8_t returnValue = defaultValue;
   if (startMessage != 0)
     mp3.playMp3FolderTrack(startMessage);
@@ -1474,7 +1556,7 @@ bool setupFolder(folderSettings * theFolder) {
   if (theFolder->mode == 0) return false;
 
   //  // Hörbuchmodus -> Fortschritt im EEPROM auf 1 setzen
-  //  EEPROM.update(theFolder->folder, 1);
+  //  EEPROM.write(theFolder->folder, 1);
 
   // Einzelmodus -> Datei abfragen
   if (theFolder->mode == 4)
