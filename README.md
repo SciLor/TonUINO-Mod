@@ -1,8 +1,18 @@
-# TonUINO
+# TonUINO LOLIN32
 Die DIY Musikbox (nicht nur) für Kinder
 
 
 # Change Log
+
+## Version 2.1 LOLIN32 MOD WIP
+- Diverse Anpassungen, damit der Code auf einem ESP32 läuft
+- Standby mit Aufweckfunktion über Taste (LOLIN32)
+- Vorbereitung für einen P-MOSFET zur Abschalltung des DFPlayers / LEDs / Beschleunigungssensors
+- Schlagerkennung um zum nächsten Titel zu springen (wie Toniebox)
+- 4-Wire LEDs - FastLED Anbindung (2 LEDs mit LPD8806 implementiert)
+- Kopfhörererkennung und automatische Umschaltung
+- Fritzing Vorlage für Platine (Kompakt, passt in Toniebox)
+- Spannungsteiler USB (Akku wird geladen) / Spannungsteiler Akku (Abschaltung Akku leer) -> Nur Hardware
 
 ## Version 2.1 (xx.xx.xxxx) noch WIP
 - Partymodus hat nun eine Queue -> jedes Lied kommt nur genau 1x vorkommt
