@@ -8,6 +8,7 @@ Die DIY Musikbox (nicht nur) für Kinder
 - Diverse Anpassungen, damit der Code auf einem ESP32 läuft
 - Standby mit Aufweckfunktion über Taste (LOLIN32)
 - Vorbereitung für einen P-MOSFET zur Abschalltung des DFPlayers / LEDs / Beschleunigungssensors
+- DFPlayer IO Pin Amp on/off Mod um das Knacksen zu reduzieren.
 - Schlagerkennung um zum nächsten Titel zu springen (wie Toniebox)
 - 4-Wire LEDs - FastLED Anbindung (2 LEDs mit LPD8806 implementiert)
 - Kopfhörererkennung und automatische Umschaltung
