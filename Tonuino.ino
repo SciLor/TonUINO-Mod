@@ -16,10 +16,12 @@
   |_   _|___ ___|  |  |     |   | |     |
     | | | . |   |  |  |-   -| | | |  |  | 
     |_| |___|_|_|_____|_____|_|___|_____|
-    TonUINO Version 2.1
+    TonUINO Version 2.1 LOLIN32 MOD
 
     created by Thorsten Voß and licensed under GNU/GPL.
     Information and contribution at https://tonuino.de.
+
+    Lolin32 extensions by SciLor
 */
 
 // uncomment the below line to enable five button support
@@ -155,7 +157,7 @@ void resetSettings() {
   Serial.println(F("=== resetSettings()"));
   mySettings.cookie = cardCookie;
   mySettings.version = 2;
-  mySettings.maxVolume = 10;
+  mySettings.maxVolume = 20;
   mySettings.minVolume = 1;
   mySettings.initVolume = 1;
   mySettings.eq = 1;
@@ -661,6 +663,9 @@ CRGB leds[NUM_LEDS];
 #define headphonePin 2
 #define ampPin 15
 
+#define vSense5Pin 34
+#define vSense3Pin 35
+
 
 #ifdef FIVEBUTTONS
 #define buttonFourPin A3
@@ -705,22 +710,18 @@ void checkStandbyAtMillis() {
     goStandby();
   }
 }
+void powerOffComponents() {
+    digitalWrite(ampPin, HIGH);
+    FastLED.clear(true);
+    digitalWrite(powerDownPin, HIGH);
+}
 void goStandby() {
+    powerOffComponents();
+    
     Serial.println(F("=== power off!"));
 
-    
-    mfrc522.PCD_AntennaOff();
-    mfrc522.PCD_SoftPowerDown();
-
     cli();
-
-    FastLED.clear(true);
-
-    digitalWrite(ampPin, HIGH);
-    digitalWrite(powerDownPin, HIGH);
     
-    mp3.reset();
-
     rtc_gpio_pullup_en(GPIO_NUM_33); //powerDownPin
     rtc_gpio_pullup_en(GPIO_NUM_27); //Wake Button
     esp_sleep_enable_ext0_wakeup(GPIO_NUM_27, 0);
@@ -764,10 +765,14 @@ void setup() {
   Serial.println(F("TonUINO Version 2.1 LOLIN32 MOD"));
   Serial.println(F("created by Thorsten Voß and licensed under GNU/GPL."));
   Serial.println(F("Information and contribution at https://tonuino.de.\n"));
+  Serial.println(F("Lolin32 extensions by SciLor\n"));
   
   // Busy Pin
   pinMode(busyPin, INPUT);
   pinMode(headphonePin, INPUT_PULLUP);
+
+  pinMode(vSense5Pin, INPUT);
+  pinMode(vSense3Pin, INPUT);
 
   pinMode(powerDownPin, OUTPUT);
   pinMode(ampPin, OUTPUT);
@@ -775,6 +780,13 @@ void setup() {
   digitalWrite(ampPin, HIGH);
   delay(100);
   digitalWrite(powerDownPin, LOW);
+  delay(100);
+  
+  FastLED.addLeds<LPD8806, DATA_PIN, CLOCK_PIN, BRG>(leds, NUM_LEDS);
+  leds[0] = CRGB::Red;
+  leds[1] = CRGB::Red;
+  FastLED.show();
+  
   // load Settings from EEPROM
   loadSettingsFromFlash();
 
@@ -783,15 +795,23 @@ void setup() {
 
   // DFPlayer Mini initialisieren
   mp3.begin();
-  mp3.reset();
   
+  leds[0] = CRGB::Orange;
+  leds[1] = CRGB::Red;
+  FastLED.show();
   // Zwei Sekunden warten bis der DFPlayer Mini initialisiert ist
   delay(2000);
+  
+  mp3.stop();
   volume = mySettings.initVolume;
   mp3.setVolume(volume);
   mp3.setEq((DfMp3_Eq)(mySettings.eq - 1));
   // Fix für das Problem mit dem Timeout (ist jetzt in Upstream daher nicht mehr nötig!)
   //mySoftwareSerial.setTimeout(10000);
+
+  leds[0] = CRGB::Orange;
+  leds[1] = CRGB::Orange;
+  FastLED.show();
 
   // NFC Leser initialisieren
   SPI.begin();        // Init SPI bus
@@ -802,18 +822,20 @@ void setup() {
     key.keyByte[i] = 0xFF;
   }
 
+  leds[0] = CRGB::Yellow;
+  leds[1] = CRGB::Orange;
+  FastLED.show();
   
   Wire.begin();
   if (!accel.begin())
     Serial.println("WARNING: MMA8452 not Connected. Please check connections.");
 
   accel.setupTap(0x80, 0x7E, 0x80); //Y only
-  FastLED.addLeds<LPD8806, DATA_PIN, CLOCK_PIN, BRG>(leds, NUM_LEDS);
-
-  leds[0] = CRGB::Red;
-  leds[1] = CRGB::Green;
+  
+  leds[0] = CRGB::Yellow;
+  leds[1] = CRGB::Yellow;
   FastLED.show();
-
+  
   pinMode(buttonPause, INPUT_PULLUP);
   pinMode(buttonUp, INPUT_PULLUP);
   pinMode(buttonDown, INPUT_PULLUP);
@@ -837,6 +859,13 @@ void setup() {
     loadSettingsFromFlash();
   }
 
+  Serial.println("Voltages:");
+  Serial.print(" Input:");
+  Serial.print(get5Voltage());
+  Serial.println("v");
+  Serial.print(" Battery:");
+  Serial.print(getBatteryVoltage());
+  Serial.println("v");
 
   // Start Shortcut "at Startup" - e.g. Welcome Sound
   playShortCut(3);
@@ -993,31 +1022,104 @@ void playShortCut(uint8_t shortCut) {
     Serial.println(F("Shortcut not configured!"));
 }
 
+boolean wasCharging = false;
+float get5Voltage() {
+  float vSense5 = analogRead(vSense5Pin);
+  vSense5 = 1.2611f * 3.306f * vSense5 * 100.5f / 68.8f / 4096;
+  return vSense5;
+}
+float getBatteryVoltage() {
+  float vSense3 = analogRead(vSense3Pin);
+  vSense3 = 1.31f * 3.306f * vSense3 * 100.5f / 68.8f / 4096;
+  return vSense3;
+}
+boolean isCharging() {
+  if (get5Voltage() > 3.5f)
+    return true;
+  return false;
+}
+
+void checkCharge() {
+  if (isCharging() && !wasCharging) {
+    wasCharging = true;
+    Serial.println("Charging: ");
+    Serial.print(" Input:");
+    Serial.print(get5Voltage());
+    Serial.println("v");
+    Serial.print(" Battery:");
+    Serial.print(getBatteryVoltage());
+    Serial.println("v");
+  } else if (!isCharging() && wasCharging) {
+    wasCharging = false;
+    Serial.println("Not charging: ");
+    Serial.print(" Input:");
+    Serial.print(get5Voltage());
+    Serial.println("v");
+    Serial.print(" Battery:");
+    Serial.print(getBatteryVoltage());
+    Serial.println("v");
+    //goStandby(); //Only needed if DFPlayer is supplied with 3.3V to prevent it to brown out and crash with loud noise...
+  }
+}
+
+CRGB getChargeColor() {
+  if (isCharging())
+    return CRGB::White;
+  return CRGB::Black;
+}
+CRGB getBatteryColor() {
+  CRGB batteryColor = CRGB::Black;
+  float voltage = getBatteryVoltage();
+
+  if (voltage < 3.20f)
+    batteryColor = CRGB::Red;
+  else if (voltage < 3.40f)
+    batteryColor = CRGB::OrangeRed;
+  else if (voltage < 3.55f)
+    batteryColor = CRGB::Orange;
+  else if (voltage < 3.70f)
+    batteryColor = CRGB::Gold;
+  else if (voltage < 3.90f)
+    batteryColor = CRGB::Yellow;
+  else if (voltage < 4.00f)
+    batteryColor = CRGB::YellowGreen;
+  else if (voltage < 4.10f)
+    batteryColor = CRGB::GreenYellow;
+  else //if (voltage < 4.1f)
+    batteryColor = CRGB::Green;  
+    
+  return batteryColor;
+}
+
+int state = 0;
+void ledLoop() {
+  if ((millis() % 2000) > 1000 && state == 1) {
+      leds[0] = getChargeColor();
+      leds[1] = getBatteryColor();
+      FastLED.show();
+      state = 0;
+    } else if ((millis() % 2000) <= 1000 && state == 0) {
+      leds[0] = getBatteryColor();
+      leds[1] = getChargeColor();
+      FastLED.show();
+      state = 1;
+    }
+}
 void loop() {
-  leds[0] = CRGB::Red;
-  leds[1] = CRGB::Green;
-  FastLED.show();
-
-/*
-  sensorValue1 = analogRead(sensorPin1);
-  sensorValue2 = analogRead(sensorPin2);
-
-  convValue1 = 1.252f * 3.306f * sensorValue1 * 100.5f / 68.8f / 4096;
-  convValue2 = 1.205f * 3.306f * sensorValue2 * 100.5f / 68.8f / 4096;
-*/
-
   do {
-
     checkStandbyAtMillis();
     mp3.loop();
 
     if (digitalRead(headphonePin) == LOW && digitalRead(ampPin) == LOW) {
       digitalWrite(ampPin, HIGH);
-      Serial.println(F("=== headphones plugged in, amp off"));
+      Serial.println(F("=== headphones plugged in, amp is off"));
     } else if (digitalRead(headphonePin) == HIGH && digitalRead(ampPin) == HIGH) {
       digitalWrite(ampPin, LOW);
-      Serial.println(F("=== headphones plugged out, amp on"));
+      Serial.println(F("=== headphones plugged out, amp is on"));
     }
+
+    checkCharge(); 
+    ledLoop();
 
     // Modifier : WIP!
     if (activeModifier != NULL) {
