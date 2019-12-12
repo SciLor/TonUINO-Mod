@@ -1,6 +1,11 @@
 # TonUINO LOLIN32
 Die DIY Musikbox (nicht nur) für Kinder
 
+## Wichtig!
+Der aktuelle Fritzing PCB Entwurf hat folgendes Problem:
+Höhere Lautstärken beim DFPlayer sorgen dafür, dass die 3.3V Spannung kurz einbricht und der DFPlayer abstürzt und SEHR laute Geräusche von sich gibt. Dies kann auch passieren wenn die Ladespannung unterbrochen wird.
+Es muss unbedingt die Spannungsversorgung durch ein DC/DC Modul der DFPlayer mit 5V versorgt werden. Kleinere Module können direkt auf die Platine unter den Lolin32 gesetzt werden und müssen dann durch freie Verdrahtung angeschlossen werden.
+
 
 # Change Log
 
