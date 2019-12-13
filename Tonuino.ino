@@ -841,7 +841,7 @@ void setup() {
     }
     ESP.restart();
   }
-  accel.setupTap(0x80, 0x7E, 0x80); //Y only
+  accel.setupTap(0x80, 0x6A, 0x80); //Y only //0x7E max strength
   
   leds[0] = CRGB::Yellow;
   leds[1] = CRGB::Yellow;
@@ -1082,7 +1082,9 @@ CRGB getBatteryColor() {
   CRGB batteryColor = CRGB::Black;
   float voltage = getBatteryVoltage();
 
-  if (voltage < 3.20f)
+  if (voltage < 3.05f)
+    batteryColor = CRGB::DarkRed;
+  else if (voltage < 3.20f)
     batteryColor = CRGB::Red;
   else if (voltage < 3.40f)
     batteryColor = CRGB::OrangeRed;
@@ -1096,7 +1098,9 @@ CRGB getBatteryColor() {
     batteryColor = CRGB::YellowGreen;
   else if (voltage < 4.10f)
     batteryColor = CRGB::GreenYellow;
-  else //if (voltage < 4.1f)
+  else if (voltage < 4.15f)
+    batteryColor = CRGB::DarkGreen;  
+  else //if (voltage < 4.15f)
     batteryColor = CRGB::Green;  
     
   return batteryColor;
@@ -1104,12 +1108,16 @@ CRGB getBatteryColor() {
 
 int state = 0;
 void ledLoop() {
-  if ((millis() % 2000) > 1000 && state == 1) {
+  int waitTime = 1000;
+  if (isPlaying())
+    waitTime = waitTime / 2;
+
+  if ((millis() % (2*waitTime)) > waitTime && state == 1) {
       leds[0] = getChargeColor();
       leds[1] = getBatteryColor();
       FastLED.show();
       state = 0;
-    } else if ((millis() % 2000) <= 1000 && state == 0) {
+    } else if ((millis() % (2*waitTime)) <= waitTime && state == 0) {
       leds[0] = getBatteryColor();
       leds[1] = getChargeColor();
       FastLED.show();
@@ -1292,9 +1300,9 @@ void loop() {
 byte tap = accel.readTap();
 if (tap > 0) {
   if (tap == 0x20) {
-    nextButton();
-  } else if (tap == 0x22) {
     previousButton();
+  } else if (tap == 0x22) {
+    nextButton();
   }
 }
 #endif
