@@ -157,12 +157,12 @@ void resetSettings() {
   Serial.println(F("=== resetSettings()"));
   mySettings.cookie = cardCookie;
   mySettings.version = 2;
-  mySettings.maxVolume = 20;
+  mySettings.maxVolume = 10;
   mySettings.minVolume = 1;
   mySettings.initVolume = 1;
   mySettings.eq = 1;
   mySettings.locked = false;
-  mySettings.standbyTimer = 1;
+  mySettings.standbyTimer = 15;
   mySettings.invertVolumeButtons = true;
   mySettings.shortCuts[0].folder = 0;
   mySettings.shortCuts[1].folder = 0;
@@ -783,8 +783,8 @@ void setup() {
   delay(100);
   
   FastLED.addLeds<LPD8806, DATA_PIN, CLOCK_PIN, BRG>(leds, NUM_LEDS);
-  leds[0] = CRGB::Red;
-  leds[1] = CRGB::Red;
+  leds[0] = CRGB::White;
+  leds[1] = CRGB::White;
   FastLED.show();
   
   // load Settings from EEPROM
@@ -796,7 +796,7 @@ void setup() {
   // DFPlayer Mini initialisieren
   mp3.begin();
   
-  leds[0] = CRGB::Orange;
+  leds[0] = CRGB::Yellow;
   leds[1] = CRGB::Red;
   FastLED.show();
   // Zwei Sekunden warten bis der DFPlayer Mini initialisiert ist
@@ -809,7 +809,7 @@ void setup() {
   // Fix für das Problem mit dem Timeout (ist jetzt in Upstream daher nicht mehr nötig!)
   //mySoftwareSerial.setTimeout(10000);
 
-  leds[0] = CRGB::Orange;
+  leds[0] = CRGB::Green;
   leds[1] = CRGB::Orange;
   FastLED.show();
 
@@ -823,13 +823,24 @@ void setup() {
   }
 
   leds[0] = CRGB::Yellow;
-  leds[1] = CRGB::Orange;
+  leds[1] = CRGB::Blue;
   FastLED.show();
   
   Wire.begin();
-  if (!accel.begin())
+  if (!accel.begin()) {
     Serial.println("WARNING: MMA8452 not Connected. Please check connections.");
-
+    for (int i=0; i<20; i++) {
+      delay(250);
+      leds[1] = CRGB::Yellow;
+      leds[0] = CRGB::Blue;
+      FastLED.show();
+      delay(250);
+      leds[0] = CRGB::Yellow;
+      leds[1] = CRGB::Blue;
+      FastLED.show();
+    }
+    ESP.restart();
+  }
   accel.setupTap(0x80, 0x7E, 0x80); //Y only
   
   leds[0] = CRGB::Yellow;
@@ -1141,6 +1152,23 @@ void loop() {
       break;
     }
 
+    //standby
+    if ((upButton.pressedFor(LONG_PRESS) || downButton.pressedFor(LONG_PRESS)) && upButton.isPressed() && downButton.isPressed()) {
+      do {
+        leds[0] = CRGB::Blue;
+        leds[1] = CRGB::Red;
+        FastLED.show();
+        delay(100);
+        leds[0] = CRGB::Red;
+        leds[1] = CRGB::Blue;
+        FastLED.show();
+        delay(100);
+
+        readButtons();
+      } while (upButton.isPressed() || downButton.isPressed());
+      goStandby();
+    }
+
     if (pauseButton.wasReleased()) {
       if (activeModifier != NULL)
         if (activeModifier->handlePause() == true)
@@ -1348,6 +1376,10 @@ void adminMenu(bool fromCard) {
       }
     }
   }
+  
+  leds[0] = CRGB::Blue;
+  leds[1] = CRGB::Blue;
+  FastLED.show();
   int subMenu = voiceMenu(12, 900, 900, false, false, 0, true);
   if (subMenu == 0)
     return;
