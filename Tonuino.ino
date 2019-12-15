@@ -1108,15 +1108,23 @@ float get5Voltage() {
 int getBatteryRaw() {
   return analogRead(vSense3Pin);;
 }
+unsigned long lastWrite;
+unsigned long lastMaxWrite;
 float getBatteryVoltage() {
   int vSense3 = getBatteryRaw();
   
   if (min(vSense3, mySettings.battery.min) < mySettings.battery.min) {
     mySettings.battery.min = min(vSense3, mySettings.battery.min);
-    writeSettingsToFlash();
+    if (millis() - lastWrite > 1000*60*5) {
+      writeSettingsToFlash();
+      lastWrite = millis();
+    }
   } if (max(vSense3, mySettings.battery.max) > mySettings.battery.max) {
     mySettings.battery.max = max(vSense3, mySettings.battery.max);
-    writeSettingsToFlash();
+    if (millis() - lastWrite > 1000*60*15) {
+      writeSettingsToFlash();
+      lastWrite = millis();
+    }
   }
 
   float vSense3Float = 1.31f * 3.306f * vSense3 * 100.5f / 68.8f / 4096; //rough;
