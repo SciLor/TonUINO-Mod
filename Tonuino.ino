@@ -1127,6 +1127,10 @@ float getBatteryVoltage() {
     }
   }
 
+  float m = (4.2f - 3.0f) / (mySettings.battery.max - mySettings.battery.min);
+  float b = 4.2f - m * mySettings.battery.max;
+  float vSenseBatteryCalibrated = m * vSense3 + b;
+
   float vSense3Float = 1.31f * 3.306f * vSense3 * 100.5f / 68.8f / 4096; //rough;
   return vSense3Float;
 }
