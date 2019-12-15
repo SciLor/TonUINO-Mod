@@ -8,9 +8,19 @@
 
 #include <driver/rtc_io.h>
 
+#define FASTLED_ALLOW_INTERRUPTS 0
+#define FASTLED_INTERRUPT_RETRY_COUNT 1
 #include <FastLED.h>
 #include <Wire.h>
 #include <SparkFun_MMA8452Q.h>
+
+#include "WiFi.h"
+
+const int button = 0;         //gpio to use to trigger delay
+const int wdtTimeoutSetup = 10*1000;  //time in ms to trigger the watchdog
+const int wdtTimeoutLoop = 60*1000;  //time in ms to trigger the watchdog
+hw_timer_t *timer = NULL;
+
 /*
    _____         _____ _____ _____ _____
   |_   _|___ ___|  |  |     |   | |     |
@@ -55,6 +65,11 @@ struct nfcTagObject {
   //  uint8_t special2;
 };
 
+struct batteryCalibration {
+  int min;
+  int max;
+};
+
 // admin settings stored in eeprom
 struct adminSettings {
   uint32_t cookie;
@@ -69,6 +84,7 @@ struct adminSettings {
   folderSettings shortCuts[4];
   uint8_t adminMenuLocked;
   uint8_t adminMenuPin[4];
+  batteryCalibration battery;
 };
 
 adminSettings mySettings;
@@ -86,6 +102,9 @@ void writeCard(nfcTagObject nfcTag);
 void dump_byte_array(byte * buffer, byte bufferSize);
 void adminMenu(bool fromCard = false);
 bool knownCard = false;
+
+void installWatchdog(int timeoutInMS);
+void removeWatchdog();
 
 // implement a notification class,
 // its member methods will get called
@@ -151,13 +170,14 @@ void writeSettingsToFlash() {
   Serial.println(F("=== writeSettingsToFlash()"));
   int address = sizeof(myFolder->folder) * 100;
   EEPROM.put(address, mySettings);
+  EEPROM.commit();
 }
 
 void resetSettings() {
   Serial.println(F("=== resetSettings()"));
   mySettings.cookie = cardCookie;
   mySettings.version = 2;
-  mySettings.maxVolume = 10;
+  mySettings.maxVolume = 15;
   mySettings.minVolume = 1;
   mySettings.initVolume = 1;
   mySettings.eq = 1;
@@ -173,6 +193,8 @@ void resetSettings() {
   mySettings.adminMenuPin[1] = 1;
   mySettings.adminMenuPin[2] = 1;
   mySettings.adminMenuPin[3] = 1;
+  mySettings.battery.min = 4095;
+  mySettings.battery.max = 0;
 
   writeSettingsToFlash();
 }
@@ -195,8 +217,13 @@ void loadSettingsFromFlash() {
   Serial.println(F("=== loadSettingsFromFlash()"));
   int address = sizeof(myFolder->folder) * 100;
   EEPROM.get(address, mySettings);
-  if (mySettings.cookie != cardCookie)
+  if (mySettings.cookie != cardCookie) {
+    Serial.print("Cookie different, resetting: ");
+    Serial.print(mySettings.cookie);
+    Serial.print("!=");
+    Serial.println(cardCookie);
     resetSettings();
+  }
   migrateSettings(mySettings.version);
 
   Serial.print(F("Version: "));
@@ -231,6 +258,11 @@ void loadSettingsFromFlash() {
   Serial.print(mySettings.adminMenuPin[1]);
   Serial.print(mySettings.adminMenuPin[2]);
   Serial.println(mySettings.adminMenuPin[3]);
+
+  Serial.print(F("Battery calibration: "));
+  Serial.print(mySettings.battery.min);
+  Serial.print("/");
+  Serial.println(mySettings.battery.max);
 }
 
 class Modifier {
@@ -579,10 +611,12 @@ static void nextTrack(uint16_t track) {
       mp3.playFolderTrack(myFolder->folder, currentTrack);
       // Fortschritt im EEPROM abspeichern
       EEPROM.write(myFolder->folder, currentTrack);
+      EEPROM.commit();
     } else {
       //      mp3.sleep();  // Je nach Modul kommt es nicht mehr zurück aus dem Sleep!
       // Fortschritt zurück setzen
       EEPROM.write(myFolder->folder, 1);
+      EEPROM.commit();
       setstandbyTimer();
     }
   }
@@ -628,6 +662,7 @@ static void previousTrack() {
     mp3.playFolderTrack(myFolder->folder, currentTrack);
     // Fortschritt im EEPROM abspeichern
     EEPROM.write(myFolder->folder, currentTrack);
+    EEPROM.commit();
   }
   delay(1000);
 }
@@ -689,6 +724,9 @@ bool ignoreButtonFour = false;
 bool ignoreButtonFive = false;
 #endif
 
+#define batteryVoltageMin 3.0f
+#define batteryVoltageMax 4.2f
+
 /// Funktionen für den Standby Timer (z.B. über Pololu-Switch oder Mosfet)
 
 void setstandbyTimer() {
@@ -716,13 +754,15 @@ void powerOffComponents() {
     digitalWrite(powerDownPin, HIGH);
 }
 void goStandby() {
+    Serial.println(F("=== power off!"));
     powerOffComponents();
     
-    Serial.println(F("=== power off!"));
-
     cli();
     
-    rtc_gpio_pullup_en(GPIO_NUM_33); //powerDownPin
+    rtc_gpio_pullup_en(GPIO_NUM_33); //powerDownPin Seems to crash on wakeup sometimes :(
+    //gpio_hold_en(GPIO_NUM_33); //Blocks GPIO after reset?!
+    //gpio_deep_sleep_hold_en();
+
     rtc_gpio_pullup_en(GPIO_NUM_27); //Wake Button
     esp_sleep_enable_ext0_wakeup(GPIO_NUM_27, 0);
     esp_deep_sleep_start();
@@ -744,10 +784,47 @@ void waitForTrackToFinish() {
   } while (isPlaying());
 }
 
-void setup() {
+void print_wakeup_reason(){
+  esp_sleep_wakeup_cause_t wakeup_reason;
+  wakeup_reason = esp_sleep_get_wakeup_cause();
+  switch(wakeup_reason)
+  {
+    case 1  : Serial.println("Wakeup caused by external signal using RTC_IO"); break;
+    case 2  : Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
+    case 3  : Serial.println("Wakeup caused by timer"); break;
+    case 4  : Serial.println("Wakeup caused by touchpad"); break;
+    case 5  : Serial.println("Wakeup caused by ULP program"); break;
+    default : Serial.println("Wakeup was not caused by deep sleep"); break;
+  }
+}
 
-  Serial.begin(115200); // Es gibt ein paar Debug Ausgaben über die serielle Schnittstelle
-   
+void setup() {
+  installWatchdog(wdtTimeoutSetup);
+  
+  pinMode(openAnalogPin, INPUT);
+  pinMode(busyPin, INPUT);
+  
+  pinMode(headphonePin, INPUT_PULLUP);
+  
+  pinMode(buttonPause, INPUT_PULLUP);
+  pinMode(buttonUp, INPUT_PULLUP);
+  pinMode(buttonDown, INPUT_PULLUP);
+
+#ifdef FIVEBUTTONS
+  pinMode(buttonFourPin, INPUT_PULLUP);
+  pinMode(buttonFivePin, INPUT_PULLUP);
+#endif
+
+  pinMode(vSense5Pin, INPUT);
+  pinMode(vSense3Pin, INPUT);
+  
+  pinMode(ampPin, OUTPUT);
+ 
+  WiFi.mode(WIFI_OFF);
+  btStop();
+                                     
+  digitalWrite(ampPin, HIGH);    
+  
   // Wert für randomSeed() erzeugen durch das mehrfache Sammeln von rauschenden LSBs eines offenen Analogeingangs
   uint32_t ADC_LSB;
   uint32_t ADCSeed;
@@ -756,6 +833,8 @@ void setup() {
     ADCSeed ^= ADC_LSB << (i % 32); 
   }
   randomSeed(ADCSeed); // Zufallsgenerator initialisieren
+  
+  Serial.begin(115200); // Es gibt ein paar Debug Ausgaben über die serielle Schnittstelle
 
   // Dieser Hinweis darf natürlich entfernt werden
   Serial.println(F("\n _____         _____ _____ _____ _____"));
@@ -767,41 +846,40 @@ void setup() {
   Serial.println(F("Information and contribution at https://tonuino.de.\n"));
   Serial.println(F("Lolin32 extensions by SciLor\n"));
   
-  // Busy Pin
-  pinMode(busyPin, INPUT);
-  pinMode(headphonePin, INPUT_PULLUP);
-
-  pinMode(vSense5Pin, INPUT);
-  pinMode(vSense3Pin, INPUT);
-
-  pinMode(powerDownPin, OUTPUT);
-  pinMode(ampPin, OUTPUT);
-
-  digitalWrite(ampPin, HIGH);
-  delay(100);
-  digitalWrite(powerDownPin, LOW);
-  delay(100);
+  print_wakeup_reason();
   
-  FastLED.addLeds<LPD8806, DATA_PIN, CLOCK_PIN, BRG>(leds, NUM_LEDS);
-  leds[0] = CRGB::White;
-  leds[1] = CRGB::White;
-  FastLED.show();
+  if (!EEPROM.begin(sizeof(myFolder->folder) * 100 + sizeof(mySettings))){
+    Serial.println("Failed to initialise EEPROM...");
+  }
   
+  Serial.println(F("Wakeup devices"));
+  
+  //pinMode(powerDownPin, OUTPUT);
+  //digitalWrite(powerDownPin, HIGH); //CRASH increase P-MOSFET resitor?
+  //digitalWrite(powerDownPin, LOW);
+
+  pinMode(powerDownPin, INPUT); //Works WTF
   // load Settings from EEPROM
+
   loadSettingsFromFlash();
 
   // activate standby timer
   setstandbyTimer();
 
-  // DFPlayer Mini initialisieren
-  mp3.begin();
-  
+  FastLED.addLeds<LPD8806, DATA_PIN, CLOCK_PIN, BRG>(leds, NUM_LEDS);
+  //FastLED.setBrightness(127);
   leds[0] = CRGB::Yellow;
   leds[1] = CRGB::Red;
   FastLED.show();
+
+  // DFPlayer Mini initialisieren
+  Serial.println(F("Wakeup dfplayer"));
+  mp3.begin();
+  
   // Zwei Sekunden warten bis der DFPlayer Mini initialisiert ist
   delay(2000);
   
+  Serial.println(F("Prepare dfplayer"));
   mp3.stop();
   volume = mySettings.initVolume;
   mp3.setVolume(volume);
@@ -813,6 +891,7 @@ void setup() {
   leds[1] = CRGB::Orange;
   FastLED.show();
 
+  Serial.println(F("Prepare NFC"));
   // NFC Leser initialisieren
   SPI.begin();        // Init SPI bus
   mfrc522.PCD_Init(); // Init MFRC522
@@ -826,6 +905,7 @@ void setup() {
   leds[1] = CRGB::Blue;
   FastLED.show();
   
+  Serial.println(F("Prepare MMA8452"));
   Wire.begin();
   if (!accel.begin()) {
     Serial.println("WARNING: MMA8452 not Connected. Please check connections.");
@@ -839,7 +919,7 @@ void setup() {
       leds[1] = CRGB::Blue;
       FastLED.show();
     }
-    ESP.restart();
+    esp_restart();
   }
   accel.setupTap(0x80, 0x6A, 0x80); //Y only //0x7E max strength
   
@@ -847,19 +927,7 @@ void setup() {
   leds[1] = CRGB::Yellow;
   FastLED.show();
   
-  pinMode(buttonPause, INPUT_PULLUP);
-  pinMode(buttonUp, INPUT_PULLUP);
-  pinMode(buttonDown, INPUT_PULLUP);
-
   digitalWrite(ampPin, LOW);
-#ifdef FIVEBUTTONS
-  pinMode(buttonFourPin, INPUT_PULLUP);
-  pinMode(buttonFivePin, INPUT_PULLUP);
-#endif
-  //pinMode(shutdownPin, OUTPUT);
-  //digitalWrite(shutdownPin, LOW);
-
-
   // RESET --- ALLE DREI KNÖPFE BEIM STARTEN GEDRÜCKT HALTEN -> alle EINSTELLUNGEN werden gelöscht
   if (digitalRead(buttonPause) == LOW && digitalRead(buttonUp) == LOW &&
       digitalRead(buttonDown) == LOW) {
@@ -867,19 +935,16 @@ void setup() {
     for (int i = 0; i < EEPROM.length(); i++) {
       EEPROM.write(i, 0);
     }
+    EEPROM.commit();
     loadSettingsFromFlash();
   }
 
-  Serial.println("Voltages:");
-  Serial.print(" Input:");
-  Serial.print(get5Voltage());
-  Serial.println("v");
-  Serial.print(" Battery:");
-  Serial.print(getBatteryVoltage());
-  Serial.println("v");
+  printBatteryStats();
 
   // Start Shortcut "at Startup" - e.g. Welcome Sound
   playShortCut(3);
+
+  removeWatchdog();
 }
 
 void readButtons() {
@@ -977,7 +1042,7 @@ void playFolder() {
   }
   // Hörbuch Modus: kompletten Ordner spielen und Fortschritt merken
   if (myFolder->mode == 5) {
-    Serial.println(F("Hörbuch Modus -> kompletten Ordner spielen und "
+    Serial.println(F("Hörbuch Modus -> kompletten Ordner spielen und " 
                      "Fortschritt merken"));
     currentTrack = EEPROM.read(myFolder->folder);
     if (currentTrack == 0 || currentTrack > numTracksInFolder) {
@@ -1039,10 +1104,23 @@ float get5Voltage() {
   vSense5 = 1.2611f * 3.306f * vSense5 * 100.5f / 68.8f / 4096;
   return vSense5;
 }
+
+int getBatteryRaw() {
+  return analogRead(vSense3Pin);;
+}
 float getBatteryVoltage() {
-  float vSense3 = analogRead(vSense3Pin);
-  vSense3 = 1.31f * 3.306f * vSense3 * 100.5f / 68.8f / 4096;
-  return vSense3;
+  int vSense3 = getBatteryRaw();
+  
+  if (min(vSense3, mySettings.battery.min) < mySettings.battery.min) {
+    mySettings.battery.min = min(vSense3, mySettings.battery.min);
+    writeSettingsToFlash();
+  } if (max(vSense3, mySettings.battery.max) > mySettings.battery.max) {
+    mySettings.battery.max = max(vSense3, mySettings.battery.max);
+    writeSettingsToFlash();
+  }
+
+  float vSense3Float = 1.31f * 3.306f * vSense3 * 100.5f / 68.8f / 4096; //rough;
+  return vSense3Float;
 }
 boolean isCharging() {
   if (get5Voltage() > 3.5f)
@@ -1050,25 +1128,29 @@ boolean isCharging() {
   return false;
 }
 
+void printBatteryStats() {
+  if (isCharging()) {
+    Serial.println("Charging: ");
+  } else {
+    Serial.println("Not charging: ");
+  }
+  Serial.print(" Input:");
+  Serial.print(get5Voltage());
+  Serial.println("v");
+  Serial.print(" Battery:");
+  Serial.print(getBatteryVoltage());
+  Serial.println("v");
+  Serial.print(" Battery raw read: ");
+  Serial.println(getBatteryRaw());
+}
+
 void checkCharge() {
   if (isCharging() && !wasCharging) {
     wasCharging = true;
-    Serial.println("Charging: ");
-    Serial.print(" Input:");
-    Serial.print(get5Voltage());
-    Serial.println("v");
-    Serial.print(" Battery:");
-    Serial.print(getBatteryVoltage());
-    Serial.println("v");
+    printBatteryStats();
   } else if (!isCharging() && wasCharging) {
     wasCharging = false;
-    Serial.println("Not charging: ");
-    Serial.print(" Input:");
-    Serial.print(get5Voltage());
-    Serial.println("v");
-    Serial.print(" Battery:");
-    Serial.print(getBatteryVoltage());
-    Serial.println("v");
+    printBatteryStats();
     //goStandby(); //Only needed if DFPlayer is supplied with 3.3V to prevent it to brown out and crash with loud noise...
   }
 }
@@ -1108,9 +1190,10 @@ CRGB getBatteryColor() {
 
 int state = 0;
 void ledLoop() {
-  int waitTime = 1000;
+  int waitTime = 1000 * 2;
+  int isPlayingFactor = 4;
   if (isPlaying())
-    waitTime = waitTime / 2;
+    waitTime = waitTime / isPlayingFactor;
 
   if ((millis() % (2*waitTime)) > waitTime && state == 1) {
       leds[0] = getChargeColor();
@@ -1388,6 +1471,7 @@ void adminMenu(bool fromCard) {
   leds[0] = CRGB::Blue;
   leds[1] = CRGB::Blue;
   FastLED.show();
+  
   int subMenu = voiceMenu(12, 900, 900, false, false, 0, true);
   if (subMenu == 0)
     return;
@@ -1522,6 +1606,7 @@ void adminMenu(bool fromCard) {
     for (int i = 0; i < EEPROM.length(); i++) {
       EEPROM.write(i, 0);
     }
+    EEPROM.commit();
     resetSettings();
     mp3.playMp3FolderTrack(999);
   }
@@ -1669,6 +1754,8 @@ uint8_t voiceMenu(int numberOfOptions, int startMessage, int messageOffset,
 
 void resetCard() {
   mp3.playMp3FolderTrack(800);
+
+  Serial.println(F("Karte neu konfigurieren..."));
   do {
     pauseButton.read();
     upButton.read();
@@ -1680,9 +1767,6 @@ void resetCard() {
       return;
     }
   } while (!mfrc522.PICC_IsNewCardPresent());
-
-  if (!mfrc522.PICC_ReadCardSerial())
-    return;
 
   Serial.print(F("Karte wird neu konfiguriert!"));
   setupCard();
@@ -2025,4 +2109,18 @@ bool checkTwo ( uint8_t a[], uint8_t b[] ) {
     }
   }
   return true;
+}
+
+void IRAM_ATTR resetModule() {
+  ets_printf("reboot\n");
+  esp_restart();
+}
+void installWatchdog(int timeoutInMS) {
+  timer = timerBegin(0, 80, true);                  //timer 0, div 80
+  timerAttachInterrupt(timer, &resetModule, true);  //attach callback
+  timerAlarmWrite(timer, timeoutInMS * 1000, false); //set time in us
+  timerAlarmEnable(timer);                          //enable interrupt
+}
+void removeWatchdog() {
+  timerAlarmDisable(timer);
 }
